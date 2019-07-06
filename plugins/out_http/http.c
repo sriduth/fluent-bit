@@ -39,16 +39,17 @@
 
 struct flb_output_plugin out_http_plugin;
 
-static char *msgpack_to_json(struct flb_out_http *ctx, const char *data, uint64_t bytes, uint64_t *out_size)
+static flb_sds_t msgpack_to_json(struct flb_out_http *ctx,
+                                 const char *data, uint64_t bytes,
+                                 uint64_t *out_size)
 {
     int i;
-    int ret;
     int len;
     int array_size = 0;
     int map_size;
     size_t off = 0;
-    char *json_buf;
-    size_t json_size;
+    flb_sds_t tmp;
+    flb_sds_t out_buf;
     char time_formatted[32];
     size_t s;
     msgpack_unpacked result;
@@ -129,9 +130,8 @@ static char *msgpack_to_json(struct flb_out_http *ctx, const char *data, uint64_
     msgpack_unpacked_destroy(&result);
 
     /* Format to JSON */
-    ret = flb_msgpack_raw_to_json_str(tmp_sbuf.data, tmp_sbuf.size,
-                                      &json_buf, &json_size);
-    if (ret != 0) {
+    out_buf = flb_msgpack_raw_to_json_sds(tmp_sbuf.data, tmp_sbuf.size);
+    if (!out_buf) {
         msgpack_sbuffer_destroy(&tmp_sbuf);
         return NULL;
     }
@@ -140,7 +140,7 @@ static char *msgpack_to_json(struct flb_out_http *ctx, const char *data, uint64_
     if ((ctx->out_format == FLB_HTTP_OUT_JSON_STREAM) ||
         (ctx->out_format == FLB_HTTP_OUT_JSON_LINES)) {
         char *p;
-        char *end = json_buf + json_size;
+        char *end = out_buf + flb_sds_len(out_buf);
         int level = 0;
         int in_string = FLB_FALSE;
         int in_escape = FLB_FALSE;
@@ -149,7 +149,7 @@ static char *msgpack_to_json(struct flb_out_http *ctx, const char *data, uint64_
             separator = '\n';
         }
 
-        for (p = json_buf; p!=end; p++) {
+        for (p = out_buf; p != end; p++) {
             if (in_escape)
                 in_escape = FLB_FALSE;
             else if (*p == '\\')
@@ -167,12 +167,24 @@ static char *msgpack_to_json(struct flb_out_http *ctx, const char *data, uint64_
                     *p = separator;
             }
         }
+
+        tmp = flb_sds_cat(out_buf, "\n", 1);
+        if (!tmp) {
+            flb_sds_destroy(out_buf);
+            msgpack_sbuffer_destroy(&tmp_sbuf);
+            return NULL;
+        }
+
+        if (tmp != out_buf) {
+            out_buf = tmp;
+        }
+
     }
 
     msgpack_sbuffer_destroy(&tmp_sbuf);
 
-    *out_size = json_size;
-    return json_buf;
+    *out_size = flb_sds_len(out_buf);
+    return out_buf;
 }
 
 static int cb_http_init(struct flb_output_instance *ins,
@@ -377,7 +389,7 @@ static void cb_http_flush(const void *data, size_t bytes,
 {
     int ret = FLB_ERROR;
     struct flb_out_http *ctx = out_context;
-    void *body = NULL;
+    flb_sds_t body = NULL;
     uint64_t body_len;
     (void)i_ins;
 
@@ -387,7 +399,7 @@ static void cb_http_flush(const void *data, size_t bytes,
         body = msgpack_to_json(ctx, data, bytes, &body_len);
         if (body != NULL) {
             ret = http_post(ctx, body, body_len, tag, tag_len);
-            flb_free(body);
+            flb_sds_destroy(body);
         }
     }
     else if (ctx->out_format == FLB_HTTP_OUT_GELF) {
