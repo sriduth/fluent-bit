@@ -27,9 +27,9 @@
 
 #include "stdout.h"
 
-static char *msgpack_to_json(struct flb_out_stdout_config *ctx,
-                             const char *data, uint64_t bytes,
-                             uint64_t *out_size)
+static flb_sds_t msgpack_to_json(struct flb_out_stdout_config *ctx,
+                                 const char *data, uint64_t bytes,
+                                 uint64_t *out_size)
 {
     int i;
     int ret;
@@ -41,6 +41,8 @@ static char *msgpack_to_json(struct flb_out_stdout_config *ctx,
     size_t json_size;
     char time_formatted[32];
     size_t s;
+    flb_sds_t tmp;
+    flb_sds_t out_buf;
     msgpack_unpacked result;
     msgpack_object root;
     msgpack_object map;
@@ -115,8 +117,7 @@ static char *msgpack_to_json(struct flb_out_stdout_config *ctx,
     msgpack_unpacked_destroy(&result);
 
     /* Format to JSON */
-    ret = flb_msgpack_raw_to_json_str(tmp_sbuf.data, tmp_sbuf.size,
-                                      &json_buf, &json_size);
+    out_buf =  flb_msgpack_raw_to_json_sds(tmp_sbuf.data, tmp_sbuf.size);
 
     /* Convert to JSON lines from JSON array */
     {
@@ -145,6 +146,17 @@ static char *msgpack_to_json(struct flb_out_stdout_config *ctx,
                     *p = separator;
             }
         }
+
+        tmp = flb_sds_cat(out_buf, "\n", 1);
+        if (!tmp) {
+            flb_sds_destroy(out_buf);
+            msgpack_sbuffer_destroy(&tmp_sbuf);
+            return NULL;
+        }
+        if (tmp != out_buf) {
+            out_buf = tmp;
+        }
+
     }
 
     msgpack_sbuffer_destroy(&tmp_sbuf);
@@ -152,8 +164,8 @@ static char *msgpack_to_json(struct flb_out_stdout_config *ctx,
         return NULL;
     }
 
-    *out_size = json_size;
-    return json_buf;
+    *out_size = flb_sds_len(out_buf);
+    return out_buf;
 }
 
 
@@ -213,7 +225,7 @@ static void cb_stdout_flush(const void *data, size_t bytes,
     msgpack_unpacked result;
     size_t off = 0, cnt = 0;
     struct flb_out_stdout_config *ctx = out_context;
-    char *json = NULL;
+    flb_sds_t json;
     char *buf = NULL;
     uint64_t json_len;
 
@@ -225,7 +237,7 @@ static void cb_stdout_flush(const void *data, size_t bytes,
     if (ctx->out_format == FLB_STDOUT_OUT_JSON_LINES) {
         json = msgpack_to_json(ctx, data, bytes, &json_len);
         printf("%s\n", json);
-        flb_free(json);
+        flb_sds_destroy(json);
         fflush(stdout);
     }
     else {
